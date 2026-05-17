@@ -1,5 +1,7 @@
 # overleaf-cookie-bridge
 
+[中文说明](README.zh-CN.md)
+
 A small, cookie-only CLI for safely reading and backing up Overleaf projects through the web session used by your browser.
 
 It is designed for agent-assisted paper workflows where Git access is unavailable or inconvenient:
