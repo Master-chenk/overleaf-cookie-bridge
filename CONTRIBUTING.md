@@ -39,6 +39,7 @@ This project exposes read-oriented commands:
 - list projects
 - download project backups
 - pull projects to a local workspace
+- replace one known remote file with backup, explicit confirmation, and zip verification
 
 Keep changes aligned with that scope.
 

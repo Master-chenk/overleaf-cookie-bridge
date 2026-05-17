@@ -1,6 +1,6 @@
 # overleaf-cookie-bridge
 
-一个只依赖 Overleaf 浏览器登录态 cookie 的小型 CLI，用于安全读取、备份和拉取 Overleaf 项目。
+一个只依赖 Overleaf 浏览器登录态 cookie 的小型 CLI，用于安全读取、备份、拉取和替换指定 Overleaf 项目文件。
 
 适用于没有 Overleaf Git 权限、Git 配置不方便，或者希望让 agent 先把论文源码拉到本地处理的场景。
 
@@ -10,6 +10,7 @@
 - 列出当前账号可见的 Overleaf 项目
 - 下载完整项目 zip 备份
 - 将项目拉取并解压到本地工作目录
+- 通过备份、删除、上传、zip 校验来替换一个已知远端文件
 
 重要说明：Overleaf 没有为这个流程提供公开稳定 API。本项目使用的是 Overleaf 网页端的非官方 endpoint，因此应视为 best-effort 工具。
 
@@ -24,6 +25,8 @@ overleaf-cookie verify
 overleaf-cookie list --json
 overleaf-cookie backup PROJECT_ID
 overleaf-cookie pull PROJECT_ID ./paper
+overleaf-cookie push-file PROJECT_ID ./main.tex --remote main.tex --folder-id FOLDER_ID --entity-id ENTITY_ID --dry-run
+overleaf-cookie push-file PROJECT_ID ./main.tex --remote main.tex --folder-id FOLDER_ID --entity-id ENTITY_ID --yes
 ```
 
 ## 安装
@@ -118,12 +121,42 @@ overleaf-cookie pull PROJECT_ID ./paper
 
 该命令会先保存完整 zip 备份，再把项目安全解压到目标目录。解压时会拒绝 zip path traversal 路径。
 
+### 替换一个远端文件
+
+先预览写入计划，不修改 Overleaf：
+
+```bash
+overleaf-cookie push-file PROJECT_ID ./main.tex \
+  --remote main.tex \
+  --folder-id FOLDER_ID \
+  --entity-id ENTITY_ID \
+  --entity-type doc \
+  --dry-run
+```
+
+确认计划后执行：
+
+```bash
+overleaf-cookie push-file PROJECT_ID ./main.tex \
+  --remote main.tex \
+  --folder-id FOLDER_ID \
+  --entity-id ENTITY_ID \
+  --entity-type doc \
+  --yes
+```
+
+`push-file` 会先下载完整 zip 备份，删除指定的旧 entity，把本地文件上传到指定 folder，然后再次下载 zip，逐字节验证远端内容和本地文件一致。
+
+你必须提供当前 Overleaf 的 `folder_id` 和 `entity_id`。第一次验证某个项目时，建议先用临时文件测试。替换 `doc` 可能改变 Overleaf 内部 entity id，并可能影响该文件上的评论或历史记录。
+
 ## 安全模型
 
-当前 CLI 是只读取向的：
+当前 CLI 是保守写入模型：
 
-- 不暴露远程写入命令
-- 本地解压前先保存完整 zip 备份
+- 本地解压或远端替换前都会保存完整 zip 备份
+- 远端替换必须显式传入 `--yes`
+- `push-file --dry-run` 只预览计划，不修改远端
+- `push-file --yes` 上传后会重新下载项目 zip 做内容校验
 - 常见错误路径会对 cookie 做脱敏
 - 解压 zip 时检查路径穿越
 
@@ -147,14 +180,15 @@ pip install -e '.[dev]'
 ## 项目结构
 
 ```text
-src/overleaf_cookie_bridge/auth.py    # cookie 处理和脱敏
-src/overleaf_cookie_bridge/client.py  # 项目列表、zip 下载、CSRF 解析
-src/overleaf_cookie_bridge/sync.py    # zip 备份和安全解压
-src/overleaf_cookie_bridge/tree.py    # entity tree 辅助结构
-src/overleaf_cookie_bridge/cli.py     # click CLI
-tests/                                # pytest 测试
-docs/                                 # endpoint 说明和维护文档
-SKILL.md                              # agent runbook
+src/overleaf_cookie_bridge/auth.py       # cookie 处理和脱敏
+src/overleaf_cookie_bridge/client.py     # 项目列表、zip 下载、CSRF、上传/删除
+src/overleaf_cookie_bridge/remote_zip.py # zip 内容校验辅助
+src/overleaf_cookie_bridge/sync.py       # zip 备份和安全解压
+src/overleaf_cookie_bridge/tree.py       # entity tree 辅助结构
+src/overleaf_cookie_bridge/cli.py        # click CLI
+tests/                                   # pytest 测试
+docs/                                    # endpoint 说明和维护文档
+SKILL.md                                 # agent runbook
 ```
 
 ## 安全提醒

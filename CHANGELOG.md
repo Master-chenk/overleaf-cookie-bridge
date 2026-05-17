@@ -13,6 +13,9 @@ The format loosely follows Keep a Changelog, and this project uses semantic vers
 - `overleaf-cookie list` and `overleaf-cookie list --json` commands.
 - `overleaf-cookie backup PROJECT_ID` command.
 - `overleaf-cookie pull PROJECT_ID DESTINATION` command.
+- `overleaf-cookie push-file PROJECT_ID LOCAL_FILE --remote REMOTE_PATH --folder-id FOLDER_ID --entity-id ENTITY_ID` command with `--dry-run` and `--yes` modes.
+- CSRF-protected upload and delete helpers.
+- Post-upload zip verification for remote replacement.
 - Safe zip extraction with path traversal protection.
 - Timestamped project zip backups.
 - Secret redaction helpers.

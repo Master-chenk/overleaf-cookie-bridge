@@ -1,6 +1,6 @@
 ---
 name: overleaf-cookie-bridge
-description: Use Overleaf Cookie Bridge to access Overleaf projects with only the browser session cookie. Use when a human or agent asks to verify cookie-only access, list Overleaf projects, download a full project backup, or pull an Overleaf paper into a local workspace without Git. Treat the cookie as a live login credential and never print, commit, or store it in project files.
+description: Use Overleaf Cookie Bridge to access and update Overleaf projects with only the browser session cookie. Use when a human or agent asks to verify cookie-only access, list projects, download a backup, pull a project locally, or replace one known remote file through backup, delete, upload, and zip verification. Treat the cookie as a live login credential and never print, commit, or store it in project files.
 ---
 
 # Overleaf Cookie Bridge Agent Runbook
@@ -44,7 +44,8 @@ overleaf-cookie --help
 | Create a timestamped backup only | `overleaf-cookie backup <PROJECT_ID>` |
 | Pull a project to local disk | `overleaf-cookie pull <PROJECT_ID> <DEST_DIR>` |
 | Inspect project source files after pull | `find <DEST_DIR> -maxdepth 2 -type f` or Hermes `search_files(target='files')` |
-| Edit a paper | pull to local disk, edit local files, compile locally, and keep the backup zip for recovery |
+| Replace one known remote file | `overleaf-cookie push-file <PROJECT_ID> <LOCAL_FILE> --remote <PATH> --folder-id <FOLDER_ID> --entity-id <ENTITY_ID> --dry-run`, then repeat with `--yes` |
+| Edit a paper | pull to local disk, edit local files, compile locally, then push one file at a time after dry-run review |
 
 ## Implemented Commands
 
@@ -53,16 +54,19 @@ overleaf-cookie verify
 overleaf-cookie list --json
 overleaf-cookie backup PROJECT_ID
 overleaf-cookie pull PROJECT_ID DESTINATION
+overleaf-cookie push-file PROJECT_ID LOCAL_FILE --remote REMOTE_PATH --folder-id FOLDER_ID --entity-id ENTITY_ID --dry-run
+overleaf-cookie push-file PROJECT_ID LOCAL_FILE --remote REMOTE_PATH --folder-id FOLDER_ID --entity-id ENTITY_ID --yes
 ```
 
 Implemented modules:
 
 ```text
-src/overleaf_cookie_bridge/auth.py    # cookie handling and redaction
-src/overleaf_cookie_bridge/client.py  # project list, zip download, CSRF parse
-src/overleaf_cookie_bridge/sync.py    # backup zip and safe extraction
-src/overleaf_cookie_bridge/tree.py    # entity tree helpers
-src/overleaf_cookie_bridge/cli.py     # click CLI
+src/overleaf_cookie_bridge/auth.py       # cookie handling and redaction
+src/overleaf_cookie_bridge/client.py     # project list, zip download, CSRF, upload/delete
+src/overleaf_cookie_bridge/remote_zip.py # zip member verification helpers
+src/overleaf_cookie_bridge/sync.py       # backup zip and safe extraction
+src/overleaf_cookie_bridge/tree.py       # entity tree helpers
+src/overleaf_cookie_bridge/cli.py        # click CLI
 ```
 
 Tests:
@@ -106,8 +110,10 @@ These are unofficial Overleaf web endpoints and may change.
 | Purpose | Endpoint | Notes |
 | --- | --- | --- |
 | Project list | `GET https://www.overleaf.com/` | Parse `meta[name=ol-prefetchedProjectsBlob]` |
-| Project page / CSRF parser | `GET /project/{project_id}` | Parse `meta[name=ol-csrfToken]`; parser is present for endpoint compatibility checks |
-| Download source zip | `GET /project/{project_id}/download/zip` | Used for backup and pull |
+| Project page / CSRF | `GET /project/{project_id}` | Parse `meta[name=ol-csrfToken]` |
+| Download source zip | `GET /project/{project_id}/download/zip` | Used for backup, pull, and post-upload verification |
+| Upload file/doc | `POST /project/{project_id}/upload?folder_id={folder_id}` | Multipart upload, needs CSRF |
+| Delete entity | `DELETE /project/{project_id}/{entity_type}/{entity_id}` | Needs CSRF; entity type is usually `doc` or `file` |
 
 ## Command Pipelines
 
@@ -149,17 +155,56 @@ OVERLEAF_SESSION2
   -> extract to destination
 ```
 
+### `push-file`
+
+```text
+OVERLEAF_SESSION2
+  -> read local file bytes
+  -> GET /project/{project_id}/download/zip
+  -> write timestamped backup zip
+  -> verify remote path exists in zip
+  -> show replacement plan
+  -> if --dry-run: stop without mutation
+  -> if --yes:
+       GET /project/{project_id} and parse CSRF
+       DELETE /project/{project_id}/{entity_type}/{entity_id}
+       GET /project/{project_id} and parse CSRF
+       POST /project/{project_id}/upload?folder_id={folder_id}
+       GET /project/{project_id}/download/zip
+       compare remote bytes with local bytes
+```
+
+## Remote Replacement Safety Rules
+
+`push-file` mutates Overleaf. Use it only when the user explicitly asks to update the remote project.
+
+Required practice:
+
+1. Run `push-file ... --dry-run` first.
+2. Review project ID, remote path, local file, entity type, entity ID, folder ID, backup path, old size, and new size.
+3. Execute only with `--yes` after the dry-run plan looks correct.
+4. Report the backup path.
+5. Report delete/upload entity IDs.
+6. Report that post-upload zip verification succeeded.
+
+Important limitations:
+
+- The user must provide the current `folder_id` and `entity_id`; the CLI does not discover them yet.
+- Replacing an Overleaf `doc` uses delete+upload and may change the internal entity ID.
+- Replacing a `doc` may affect comments/history attached to that file.
+- If verification fails, use the backup zip path printed by the command for recovery.
+
 ## Output Discipline
 
 - Prefer `--json` for machine-readable project lists.
 - Do not print full zip contents unless requested; summarize file counts and key paths.
 - Do not paste large LaTeX files into chat; use file paths and diffs.
-- Always report backup paths after `backup` or `pull`.
+- Always report backup paths after `backup`, `pull`, or `push-file`.
 - Never echo the cookie or raw `Cookie:` header.
 
 ## Paper Editing Workflow
 
-For a paper change with the current tool surface:
+For a paper change:
 
 1. Verify cookie:
 
@@ -186,7 +231,27 @@ find /path/to/local-paper -maxdepth 2 -type f
 latexmk -pdf -interaction=nonstopmode main.tex
 ```
 
-6. Keep the backup zip path from the pull output for recovery.
+6. Preview one remote file replacement:
+
+```bash
+overleaf-cookie push-file PROJECT_ID /path/to/local-paper/main.tex \
+  --remote main.tex \
+  --folder-id FOLDER_ID \
+  --entity-id ENTITY_ID \
+  --entity-type doc \
+  --dry-run
+```
+
+7. Execute after reviewing the plan:
+
+```bash
+overleaf-cookie push-file PROJECT_ID /path/to/local-paper/main.tex \
+  --remote main.tex \
+  --folder-id FOLDER_ID \
+  --entity-id ENTITY_ID \
+  --entity-type doc \
+  --yes
+```
 
 ## Common Pitfalls
 
@@ -196,9 +261,13 @@ latexmk -pdf -interaction=nonstopmode main.tex
 
 3. Assuming a pull modifies Overleaf. `pull` only downloads and extracts locally.
 
-4. Depending on local edits without a backup. `pull` already creates one; report the path to the user.
+4. Running `push-file` with stale entity IDs. If the remote file was replaced already, entity IDs may have changed.
 
-5. Printing cookies in shell history or logs. Use environment variables carefully and redact summaries.
+5. Replacing a `doc` without understanding the delete+upload model. Comments/history tied to the old entity may be affected.
+
+6. Depending on local edits without a backup. `pull` and `push-file` create backups; report the path to the user.
+
+7. Printing cookies in shell history or logs. Use environment variables carefully and redact summaries.
 
 ## Verification Checklist
 
@@ -210,8 +279,16 @@ Before saying cookie-only Overleaf access is working:
 - [ ] `overleaf-cookie pull PROJECT_ID DEST` extracts expected `.tex` and `.bib` files.
 - [ ] Tests pass with `pytest -q`.
 
+Before saying remote replacement is complete:
+
+- [ ] `push-file --dry-run` was reviewed.
+- [ ] `push-file --yes` completed without HTTP errors.
+- [ ] The command printed a backup zip path.
+- [ ] The command printed deleted and uploaded entity IDs.
+- [ ] The command printed `Verified remote content matches local file.`
+
 ## References
 
-- `docs/ENDPOINTS.md` — endpoint notes for the implemented read/backup workflow.
+- `docs/ENDPOINTS.md` — endpoint notes for the implemented workflow.
 - `https://github.com/jkulhanek/pyoverleaf` — reference implementation for Overleaf cookie/session behavior.
 - `https://github.com/ZhongKuang/TAAC2026-CLI` — style reference for a repo-level `SKILL.md` runbook.

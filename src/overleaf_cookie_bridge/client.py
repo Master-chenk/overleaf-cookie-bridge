@@ -1,6 +1,7 @@
 import html
 import json
 from dataclasses import dataclass
+from typing import Literal
 
 import requests
 from bs4 import BeautifulSoup
@@ -50,6 +51,12 @@ class Project:
         }
 
 
+@dataclass(frozen=True)
+class UploadedEntity:
+    entity_id: str
+    entity_type: Literal["doc", "file", "folder"]
+
+
 def parse_projects_html(content: str | bytes) -> list[Project]:
     soup = BeautifulSoup(content, "html.parser")
     meta = soup.find("meta", attrs={"name": "ol-prefetchedProjectsBlob"})
@@ -88,6 +95,22 @@ class OverleafCookieClient:
         except requests.RequestException as exc:
             raise OverleafBridgeError(redact_secrets(str(exc))) from exc
 
+    def _post(self, path: str, **kwargs) -> requests.Response:
+        try:
+            response = self.session.post(self._url(path), timeout=self.timeout, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            raise OverleafBridgeError(redact_secrets(str(exc))) from exc
+
+    def _delete(self, path: str, **kwargs) -> requests.Response:
+        try:
+            response = self.session.delete(self._url(path), timeout=self.timeout, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            raise OverleafBridgeError(redact_secrets(str(exc))) from exc
+
     def verify(self) -> bool:
         self.list_projects(include_archived=True, include_trashed=True)
         return True
@@ -110,3 +133,51 @@ class OverleafCookieClient:
     def download_project_zip(self, project_id: str) -> bytes:
         response = self._get(f"/project/{project_id}/download/zip")
         return response.content
+
+    def get_csrf_token(self, project_id: str) -> str:
+        response = self._get(f"/project/{project_id}")
+        return parse_csrf_html(response.text)
+
+    def upload_file(
+        self,
+        project_id: str,
+        folder_id: str,
+        file_name: str,
+        file_content: bytes,
+    ) -> UploadedEntity:
+        csrf_token = self.get_csrf_token(project_id)
+        response = self._post(
+            f"/project/{project_id}/upload?folder_id={folder_id}",
+            files={
+                "relativePath": (None, "null"),
+                "name": (None, file_name),
+                "type": (None, "application/octet-stream"),
+                "qqfile": (file_name, file_content, "application/octet-stream"),
+            },
+            headers={
+                "Referer": self._url(f"/project/{project_id}"),
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "x-csrf-token": csrf_token,
+            },
+        )
+        data = response.json()
+        return UploadedEntity(entity_id=data["entity_id"], entity_type=data["entity_type"])
+
+    def delete_entity(
+        self,
+        project_id: str,
+        entity_type: Literal["doc", "file", "folder"],
+        entity_id: str,
+    ) -> None:
+        csrf_token = self.get_csrf_token(project_id)
+        self._delete(
+            f"/project/{project_id}/{entity_type}/{entity_id}",
+            json={},
+            headers={
+                "Referer": self._url(f"/project/{project_id}"),
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "x-csrf-token": csrf_token,
+            },
+        )

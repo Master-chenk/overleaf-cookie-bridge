@@ -1,6 +1,6 @@
 # Endpoint Notes
 
-This project uses a small read-oriented subset of Overleaf's web behavior. These endpoints are unofficial and may change.
+This project uses a small subset of Overleaf's web behavior. These endpoints are unofficial and may change.
 
 ## Authentication
 
@@ -28,19 +28,19 @@ The response HTML includes a prefetched projects blob:
 
 The CLI parses this JSON blob and returns visible projects.
 
-## Project Page / CSRF Parser
+## Project Page / CSRF
 
 ```http
 GET https://www.overleaf.com/project/{project_id}
 ```
 
-The parser can extract:
+The parser extracts:
 
 ```html
 <meta name="ol-csrfToken" content="...">
 ```
 
-The current public CLI does not mutate Overleaf remotely, but keeping this parser tested helps detect page-shape changes.
+The token is required for upload and delete requests.
 
 ## Source Zip Download
 
@@ -53,6 +53,45 @@ Used by:
 ```bash
 overleaf-cookie backup PROJECT_ID
 overleaf-cookie pull PROJECT_ID DESTINATION
+overleaf-cookie push-file PROJECT_ID LOCAL_FILE --remote REMOTE_PATH --folder-id FOLDER_ID --entity-id ENTITY_ID --yes
 ```
 
 `pull` writes a backup zip first, then validates member paths before extraction.
+
+`push-file` downloads the zip before replacement for backup and after replacement for byte-for-byte verification.
+
+## Upload File / Doc
+
+```http
+POST https://www.overleaf.com/project/{project_id}/upload?folder_id={folder_id}
+```
+
+The CLI sends multipart form data:
+
+```text
+relativePath = null
+name = <file name>
+type = application/octet-stream
+qqfile = <file bytes>
+```
+
+Required headers include:
+
+```text
+Referer: https://www.overleaf.com/project/{project_id}
+x-csrf-token: <token from project page>
+```
+
+The response contains the new entity id and type:
+
+```json
+{"success": true, "entity_id": "...", "entity_type": "doc"}
+```
+
+## Delete Entity
+
+```http
+DELETE https://www.overleaf.com/project/{project_id}/{entity_type}/{entity_id}
+```
+
+Used by `push-file` to remove the exact entity being replaced before uploading the new file. Required headers include `Referer` and `x-csrf-token`.
